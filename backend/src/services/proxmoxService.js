@@ -250,19 +250,37 @@ class ProxmoxService {
     return parseInt(process.env.PROXMOX_TEMPLATE_VMID, 10) || 105;
   }
 
-  async cloneContainer(sourceVmid, hostname) {
-    const vmid = await this.getNextVMID();
+  async cloneContainer(sourceVmid, hostname, maxRetries = 5, retryDelayMs = 10000) {
+    let vmid = await this.getNextVMID();
 
-    // Step 1: Clone the template (full clone, not linked)
-    const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
-      newid: vmid,
-      full: 1,
-    });
-    const exitstatus = await this.waitForTask(upid);
-    const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
-    if (!ok) {
-      throw new Error(`Container clone task failed: ${exitstatus}`);
+    // Step 1: Clone the template with retry logic for locked errors
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
+          newid: vmid,
+          full: 1,
+        });
+        const exitstatus = await this.waitForTask(upid);
+        const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
+        if (!ok) {
+          throw new Error(`Container clone task failed: ${exitstatus}`);
+        }
+        lastError = null;
+        break; // Success
+      } catch (e) {
+        lastError = e;
+        if (e.message.includes('locked') && attempt < maxRetries) {
+          logger.warn(`Template ${sourceVmid} locked, retrying in ${retryDelayMs / 1000}s (attempt ${attempt}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, retryDelayMs));
+          // Get a fresh VMID for next attempt
+          vmid = await this.getNextVMID();
+        } else {
+          throw e;
+        }
+      }
     }
+    if (lastError) throw lastError;
 
     // Step 2: Set hostname on the cloned container
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
@@ -281,13 +299,13 @@ class ProxmoxService {
     return parseInt(process.env.POOL_SIZE, 10) || 3;
   }
 
-  /** List all containers with label pool=manikcloud-blank (stopped, ready to use). */
+  /** List all containers tagged as pool containers (stopped, ready to use). */
   async getPoolContainers() {
     try {
       const data = await this.request('GET', `/nodes/${this.node}/lxc`);
       return (data || []).filter(ct => {
-        const labels = ct.labels || {};
-        return labels.pool === 'manikcloud-blank' && ct.status === 'stopped';
+        const tags = ct.tags || '';
+        return tags.includes('manikcloud-pool') && ct.status === 'stopped';
       });
     } catch (e) {
       logger.warn(`Failed to list pool containers: ${e.message}`);
@@ -296,20 +314,37 @@ class ProxmoxService {
   }
 
   /** Clone a template and mark it as a pool container (stopped). */
-  async cloneToPool(sourceVmid) {
-    const vmid = await this.getNextVMID();
+  async cloneToPool(sourceVmid, maxRetries = 5, retryDelayMs = 10000) {
+    let vmid = await this.getNextVMID();
     const hostname = `pool-${vmid}`.slice(0, 64);
 
-    // Step 1: Clone the template (full clone)
-    const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
-      newid: vmid,
-      full: 1,
-    });
-    const exitstatus = await this.waitForTask(upid);
-    const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
-    if (!ok) {
-      throw new Error(`Pool container clone failed: ${exitstatus}`);
+    // Step 1: Clone the template with retry logic for locked errors
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
+          newid: vmid,
+          full: 1,
+        });
+        const exitstatus = await this.waitForTask(upid);
+        const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
+        if (!ok) {
+          throw new Error(`Pool container clone failed: ${exitstatus}`);
+        }
+        lastError = null;
+        break; // Success
+      } catch (e) {
+        lastError = e;
+        if (e.message.includes('locked') && attempt < maxRetries) {
+          logger.warn(`Template ${sourceVmid} locked for pool, retrying in ${retryDelayMs / 1000}s (attempt ${attempt}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, retryDelayMs));
+          vmid = await this.getNextVMID();
+        } else {
+          throw e;
+        }
+      }
     }
+    if (lastError) throw lastError;
 
     // Step 2: Set hostname and tag as pool container
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
@@ -323,6 +358,7 @@ class ProxmoxService {
 
   /** Configure a pool container for a workspace (set hostname, IP, resources). */
   async configurePoolContainer(vmid, { ip, gateway, cidr, cpu, memory, disk, hostname }) {
+    // Note: unprivileged is inherited from template — read-only after clone
     const configBody = {
       hostname,
       cores: cpu,
@@ -330,20 +366,19 @@ class ProxmoxService {
       rootfs: `local-lvm:${disk}`,
       net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
       features: 'nesting=1',
-      unprivileged: 1,
       tags: '', // Clear pool tag
     };
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
   }
 
   async configureContainer(vmid, { ip, gateway, cidr, cpu, memory, disk }) {
+    // Note: unprivileged is inherited from template — read-only after clone
     const configBody = {
       cores: cpu,
       memory,
       rootfs: `local-lvm:${disk}`,
       net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
       features: 'nesting=1',
-      unprivileged: 1,
     };
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
   }
