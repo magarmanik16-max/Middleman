@@ -253,11 +253,9 @@ class ProxmoxService {
   async cloneContainer(sourceVmid, hostname) {
     const vmid = await this.getNextVMID();
 
-    // Clone the template (full clone, not linked)
-    const upid = await this.request('POST', `/nodes/${this.node}/lxc`, {
-      clone: sourceVmid,
-      vmid,
-      hostname,
+    // Step 1: Clone the template (full clone, not linked)
+    const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
+      newid: vmid,
       full: 1,
     });
     const exitstatus = await this.waitForTask(upid);
@@ -265,6 +263,11 @@ class ProxmoxService {
     if (!ok) {
       throw new Error(`Container clone task failed: ${exitstatus}`);
     }
+
+    // Step 2: Set hostname on the cloned container
+    await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
+      hostname: hostname,
+    });
 
     logger.info(`Cloned container ${sourceVmid} → ${vmid} (${hostname})`);
     return vmid;
@@ -297,10 +300,9 @@ class ProxmoxService {
     const vmid = await this.getNextVMID();
     const hostname = `pool-${vmid}`.slice(0, 64);
 
-    const upid = await this.request('POST', `/nodes/${this.node}/lxc`, {
-      clone: sourceVmid,
-      vmid,
-      hostname,
+    // Step 1: Clone the template (full clone)
+    const upid = await this.request('POST', `/nodes/${this.node}/lxc/${sourceVmid}/clone`, {
+      newid: vmid,
       full: 1,
     });
     const exitstatus = await this.waitForTask(upid);
@@ -309,8 +311,9 @@ class ProxmoxService {
       throw new Error(`Pool container clone failed: ${exitstatus}`);
     }
 
-    // Tag as pool container via label
+    // Step 2: Set hostname and tag as pool container
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
+      hostname: hostname,
       tags: 'manikcloud-pool',
     });
 
