@@ -296,38 +296,32 @@ class SSHService {
 
     const credsB64 = Buffer.from(`${username}:${password}`).toString('base64');
 
-    const commands = [
-      // Step 1: Remove the template 'user' account (best-effort)
-      "bash -c 'userdel -r user 2>/dev/null || true'",
-      // Step 2: Install openssh-server if not present
-      "bash -c 'which sshd || (apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null) || true'",
-      // Step 3: Enable password auth
+    // Single script: all provisioning in one SSH call (~3-5s instead of ~25s)
+    // Base64-encode the entire script to avoid all quote escaping issues
+    const script = [
+      'set -e',
+      "userdel -r user 2>/dev/null || true",
+      "which sshd || (apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null) || true",
       "sed -i 's/^#*\\s*PasswordAuthentication\\s.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
       "sed -i 's/^#*\\s*ChallengeResponseAuthentication\\s.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true",
-      // Step 4: Restart SSH
-      "bash -c 'systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || /etc/init.d/ssh restart 2>/dev/null || true'",
-      // Step 5: Create the new workspace user
+      "systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true",
       `useradd -m -s /bin/bash ${username} 2>/dev/null || true`,
-      // Step 6: Add to sudo group
       `usermod -aG sudo ${username}`,
-      // Step 7: Set password (base64-encoded to avoid shell escaping)
-      `bash -c 'echo ${credsB64} | base64 -d | chpasswd'`,
-      // Step 8: Write welcome MOTD
-      `bash -c 'echo ${motdB64} | base64 -d > /etc/motd'`,
-      // Step 9: Write first-login password change prompt
-      `bash -c 'mkdir -p /etc/profile.d && echo ${passwdChangeB64} | base64 -d > /etc/profile.d/manikcloud-passwd.sh && chmod +x /etc/profile.d/manikcloud-passwd.sh'`,
-      // Step 10: Write welcome script
-      `bash -c 'echo ${welcomeB64} | base64 -d > /etc/profile.d/manikcloud-welcome.sh && chmod +x /etc/profile.d/manikcloud-welcome.sh'`,
-    ];
+      `echo ${credsB64} | base64 -d | chpasswd`,
+      `echo ${motdB64} | base64 -d > /etc/motd`,
+      'mkdir -p /etc/profile.d',
+      `echo ${welcomeB64} | base64 -d > /etc/profile.d/manikcloud-welcome.sh && chmod +x /etc/profile.d/manikcloud-welcome.sh`,
+      `echo ${passwdChangeB64} | base64 -d > /etc/profile.d/manikcloud-passwd.sh && chmod +x /etc/profile.d/manikcloud-passwd.sh`,
+    ].join('\n');
 
-    for (const cmd of commands) {
-      try {
-        const result = await this.execPct(vmid, cmd);
-        const truncated = cmd.slice(0, 100).replace(/\n/g, ' ');
-        logger.info(`provisionCloned: ${truncated}... -> ${(result || 'OK').slice(0, 80)}`);
-      } catch (e) {
-        logger.warn(`provisionCloned command failed (may be harmless): ${e.message.slice(0, 120)}`);
-      }
+    const scriptB64 = Buffer.from(script).toString('base64');
+
+    try {
+      const result = await this.execPct(vmid, `echo ${scriptB64} | base64 -d | bash`);
+      logger.info(`provisionCloned: all steps complete -> ${(result || 'OK').slice(0, 80)}`);
+    } catch (e) {
+      logger.error(`provisionCloned script failed: ${e.message.slice(0, 200)}`);
+      throw e;
     }
   }
 }
