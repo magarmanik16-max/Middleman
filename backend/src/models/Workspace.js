@@ -80,8 +80,10 @@ workspaceSchema.pre('save', function(next) {
 });
 
 // Static method to check if user has reached workspace limit
+// Returns true if user can create more workspaces. 0 = unlimited.
 workspaceSchema.statics.canCreateWorkspace = async function(userId) {
-  const maxWorkspaces = parseInt(process.env.MAX_WORKSPACES_PER_USER) || 1;
+  const maxWorkspaces = parseInt(process.env.MAX_WORKSPACES_PER_USER) || 0;
+  if (maxWorkspaces === 0) return true;
   const workspaceCount = await this.countDocuments({ userId });
   return workspaceCount < maxWorkspaces;
 };

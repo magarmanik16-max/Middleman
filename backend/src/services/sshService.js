@@ -109,10 +109,10 @@ class SSHService {
    * Written directly during container provisioning (step 8) — no sudo needed.
    */
   getWelcomeMOTD(hostname) {
-    const name = hostname || 'TimesGlobal Cloud Workspace';
+    const name = hostname || 'ManikCloud Workspace';
     return [
       '╔══════════════════════════════════════════════════╗',
-      '║          🚀 TimesGlobal Cloud                   ║',
+      '║          🚀 ManikCloud                          ║',
       '║                                                  ║',
       `║  ${name.padEnd(46).slice(0, 46)}║`,
       '║                                                  ║',
@@ -142,10 +142,10 @@ class SSHService {
    */
   getWelcomeScript(ip, hostname) {
     const ipPart = ip || '';
-    const name = hostname || 'TimesGlobal Cloud Workspace';
+    const name = hostname || 'ManikCloud Workspace';
     return [
       '#!/bin/bash',
-      '# TimesGlobal Cloud welcome message',
+      '# ManikCloud welcome message',
       '# Runs on every interactive login shell.',
       '#',
       '# The MOTD at /etc/motd is already set to the welcome message',
@@ -158,7 +158,7 @@ class SSHService {
       '  touch "$FLAG_FILE" 2>/dev/null',
       '  echo',
       '  echo "╔══════════════════════════════════════════════════╗"',
-      '  echo "║     🔑  Welcome to TimesGlobal Cloud!           ║"',
+      '  echo "║     🔑  Welcome to ManikCloud!                  ║"',
       '  echo "║                                                  ║"',
       `  echo "║  ${name.slice(0, 35).padEnd(35)}║"`,
       '  echo "║                                                  ║"',
@@ -177,7 +177,7 @@ class SSHService {
       'if [ -n "$BASH_VERSION" ] || [ -n "$ZSH_VERSION" ]; then',
       '  echo',
       '  echo "╔══════════════════════════════════════════════════╗"',
-      '  echo "║       ✅  Connected to TimesGlobal Cloud       ║"',
+      '  echo "║       ✅  Connected to ManikCloud              ║"',
       '  echo "║                                                  ║"',
       `  echo "║  You\'re inside your personal dev environment!   ║"`,
       `  [ -n "${ipPart}" ] && echo "║  IP: ${ipPart.padEnd(42).slice(0, 42)}║"`,
@@ -236,7 +236,7 @@ class SSHService {
       // Step 7: Write welcome MOTD to /etc/motd
       `bash -c 'echo ${motdB64} | base64 -d > /etc/motd'`,
       // Step 8: Write profile.d welcome script
-      `bash -c 'mkdir -p /etc/profile.d && echo ${welcomeB64} | base64 -d > /etc/profile.d/timesglobal-cloud-welcome.sh && chmod +x /etc/profile.d/timesglobal-cloud-welcome.sh'`
+      `bash -c 'mkdir -p /etc/profile.d && echo ${welcomeB64} | base64 -d > /etc/profile.d/manikcloud-welcome.sh && chmod +x /etc/profile.d/manikcloud-welcome.sh'`
     ];
 
     for (const cmd of commands) {
@@ -246,6 +246,87 @@ class SSHService {
         logger.info(`provisionUser: ${truncated}... -> ${(result || 'OK').slice(0, 80)}`);
       } catch (e) {
         logger.warn(`provisionUser command failed (may be harmless): ${e.message.slice(0, 120)}`);
+      }
+    }
+  }
+
+  /**
+   * Provision a user inside a CLONED container.
+   * The cloned template has a pre-existing 'user' account (user/user with sudo).
+   * This method:
+   *   1. Removes the template 'user' account
+   *   2. Creates the new workspace user with a temp password
+   *   3. Grants sudo access
+   *   4. Installs a first-login password change prompt
+   *   5. Sets up MOTD and welcome script
+   */
+  async provisionClonedContainerUser(vmid, username, password, hostname, ip) {
+    const motdContent = this.getWelcomeMOTD(hostname);
+    const motdB64 = Buffer.from(motdContent).toString('base64');
+
+    const welcomeScript = this.getWelcomeScript(ip, hostname);
+    const welcomeB64 = Buffer.from(welcomeScript).toString('base64');
+
+    // First-login script that forces password change then self-destructs
+    const passwdChangeScript = [
+      '#!/bin/bash',
+      '# Auto-remove after first run',
+      'SCRIPT_PATH="$(readlink -f "$0")"',
+      '',
+      '# Force password change on first login',
+      'if [ ! -f "$HOME/.devcloud-pwd-changed" ]; then',
+      '  echo',
+      '  echo "╔══════════════════════════════════════════════════╗"',
+      '  echo "║     🔑  Welcome to ManikCloud!                  ║"',
+      '  echo "║                                                  ║"',
+      `  echo "║  Your temporary password is insecure.            ║"`,
+      '  echo "║  Please change it NOW by running:               ║"',
+      '  echo "║                                                  ║"',
+      '  echo "║      passwd                                     ║"',
+      '  echo "║                                                  ║"',
+      '  echo "║  After changing, this prompt will not appear     ║"',
+      '  echo "║  again.                                         ║"',
+      '  echo "╚══════════════════════════════════════════════════╝"',
+      '  echo',
+      '  touch "$HOME/.devcloud-pwd-changed" 2>/dev/null',
+      'fi',
+      ''
+    ].join('\n');
+    const passwdChangeB64 = Buffer.from(passwdChangeScript).toString('base64');
+
+    const credsB64 = Buffer.from(`${username}:${password}`).toString('base64');
+
+    const commands = [
+      // Step 1: Remove the template 'user' account (best-effort)
+      "bash -c 'userdel -r user 2>/dev/null || true'",
+      // Step 2: Install openssh-server if not present
+      "bash -c 'which sshd || (apt-get update -qq && apt-get install -y -qq openssh-server 2>/dev/null) || true'",
+      // Step 3: Enable password auth
+      "sed -i 's/^#*\\s*PasswordAuthentication\\s.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+      "sed -i 's/^#*\\s*ChallengeResponseAuthentication\\s.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true",
+      // Step 4: Restart SSH
+      "bash -c 'systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || /etc/init.d/ssh restart 2>/dev/null || true'",
+      // Step 5: Create the new workspace user
+      `useradd -m -s /bin/bash ${username} 2>/dev/null || true`,
+      // Step 6: Add to sudo group
+      `usermod -aG sudo ${username}`,
+      // Step 7: Set password (base64-encoded to avoid shell escaping)
+      `bash -c 'echo ${credsB64} | base64 -d | chpasswd'`,
+      // Step 8: Write welcome MOTD
+      `bash -c 'echo ${motdB64} | base64 -d > /etc/motd'`,
+      // Step 9: Write first-login password change prompt
+      `bash -c 'mkdir -p /etc/profile.d && echo ${passwdChangeB64} | base64 -d > /etc/profile.d/manikcloud-passwd.sh && chmod +x /etc/profile.d/manikcloud-passwd.sh'`,
+      // Step 10: Write welcome script
+      `bash -c 'echo ${welcomeB64} | base64 -d > /etc/profile.d/manikcloud-welcome.sh && chmod +x /etc/profile.d/manikcloud-welcome.sh'`,
+    ];
+
+    for (const cmd of commands) {
+      try {
+        const result = await this.execPct(vmid, cmd);
+        const truncated = cmd.slice(0, 100).replace(/\n/g, ' ');
+        logger.info(`provisionCloned: ${truncated}... -> ${(result || 'OK').slice(0, 80)}`);
+      } catch (e) {
+        logger.warn(`provisionCloned command failed (may be harmless): ${e.message.slice(0, 120)}`);
       }
     }
   }

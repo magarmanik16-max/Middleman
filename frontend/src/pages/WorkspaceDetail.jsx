@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { MonitoringStats } from '../components/MonitoringStats';
+import { HistoricalCharts } from '../components/HistoricalCharts';
 import {
   PlayIcon,
   StopIcon,
@@ -19,6 +21,7 @@ import {
   KeyIcon,
   CodeBracketIcon,
   ArrowPathRoundedSquareIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 
 const StatusBadge = ({ status, large }) => {
@@ -70,30 +73,15 @@ const copyToClipboard = async (text, successMsg) => {
   }
 };
 
-const ResourceBar = ({ label, value, max, unit, color }) => {
-  const pct = Math.min((value / max) * 100, 100);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex justify-between text-xs">
-        <span style={{ color: 'var(--color-text-secondary)' }}>{label}</span>
-        <span className="font-medium" style={{ color: 'var(--color-text)' }}>{value} {unit}</span>
-      </div>
-      <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-border)' }}>
-        <div
-          className={`h-full rounded-full transition-all duration-1000 ease-out ${color}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
-};
-
 const WorkspaceDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [workspace, setWorkspace] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
+  const [showResize, setShowResize] = useState(false);
+  const [resizing, setResizing] = useState(false);
+  const [resizeForm, setResizeForm] = useState({ cpu: 1, memory: 512, disk: 10 });
   const pollingRef = useRef(null);
   const fastPollRef = useRef(null);
 
@@ -115,10 +103,10 @@ const WorkspaceDetail = () => {
     }
   };
 
-  // Main effect: initial fetch + continuous background sync (30s)
+  // Main effect: initial fetch + continuous background sync (10s for live monitoring)
   useEffect(() => {
     fetchWorkspace();
-    pollingRef.current = setInterval(() => fetchWorkspace(true), 30000);
+    pollingRef.current = setInterval(() => fetchWorkspace(true), 10000);
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
       if (fastPollRef.current) clearInterval(fastPollRef.current);
@@ -141,6 +129,29 @@ const WorkspaceDetail = () => {
       fetchWorkspace();
     } catch {
       toast.error(`Failed to ${successMsg.toLowerCase()}`);
+    }
+  };
+
+  const openResize = () => {
+    setResizeForm({
+      cpu: workspace.resources?.cpu || 1,
+      memory: workspace.resources?.memory || 512,
+      disk: workspace.resources?.disk || 10,
+    });
+    setShowResize(true);
+  };
+
+  const handleResize = async () => {
+    setResizing(true);
+    try {
+      await axios.post(`/api/workspaces/${id}/resize`, resizeForm);
+      toast.success('Resources updated!');
+      setShowResize(false);
+      fetchWorkspace();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to resize workspace');
+    } finally {
+      setResizing(false);
     }
   };
 
@@ -185,6 +196,16 @@ const WorkspaceDetail = () => {
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-xl font-bold truncate" style={{ color: 'var(--color-text)' }}>{workspace.name}</h1>
               <StatusBadge status={workspace.status} large />
+              {workspace.status === 'running' && workspace.proxmoxId && (
+                <button
+                  onClick={openResize}
+                  className="p-1.5 rounded-lg transition-all hover:scale-110"
+                  style={{ color: 'var(--color-text-muted)' }}
+                  title="Scale resources"
+                >
+                  <Cog6ToothIcon className="h-5 w-5" />
+                </button>
+              )}
             </div>
             <p className="text-sm mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>{workspace.description || 'No description'}</p>
           </div>
@@ -258,31 +279,33 @@ const WorkspaceDetail = () => {
 
           {/* Resources card */}
           <div className="glass-card p-6">
-            <h2 className="section-title mb-4">Resource Usage</h2>
-            <div className="space-y-4">
-              <ResourceBar
-                label="CPU"
-                value={workspace.resources.cpu}
-                max={4}
-                unit="vCPU"
-                color="bg-gradient-to-r from-primary-500 to-primary-400"
-              />
-              <ResourceBar
-                label="Memory"
-                value={workspace.resources.memory}
-                max={2048}
-                unit="MB"
-                color="bg-gradient-to-r from-emerald-500 to-emerald-400"
-              />
-              <ResourceBar
-                label="Disk"
-                value={workspace.resources.disk}
-                max={50}
-                unit="GB"
-                color="bg-gradient-to-r from-violet-500 to-violet-400"
-              />
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="section-title">Live Monitoring</h2>
+              {workspace.status === 'running' && (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+                  </span>
+                  Live
+                </span>
+              )}
             </div>
+            {workspace.status === 'running' ? (
+              <MonitoringStats stats={workspace.stats} />
+            ) : (
+              <div className="text-center py-6">
+                <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+                  Start the workspace to see live monitoring data.
+                </p>
+              </div>
+            )}
           </div>
+
+          {/* Historical charts - only shown when running */}
+          {workspace.status === 'running' && (
+            <HistoricalCharts workspaceId={id} />
+          )}
         </div>
 
         {/* Right column */}
@@ -298,7 +321,7 @@ const WorkspaceDetail = () => {
                 </button>
               )}
               {workspace.status === 'error' && (
-                <button onClick={() => handleAction(() => axios.post(`/api/workspaces/${id}/retry`), 'Retrying provisioning...')} className="btn-primary w-full">
+                <button onClick={() => handleAction(() => axios.post(`/api/workspaces/${id}/retry`), 'Retry initiated!')} className="btn-primary w-full">
                   <ArrowPathIcon className="h-5 w-5 mr-2" />
                   Retry Provisioning
                 </button>
@@ -402,45 +425,6 @@ const WorkspaceDetail = () => {
                   <DocumentDuplicateIcon className="h-4 w-4 mr-2" />
                   Copy SSH Command
                 </button>
-
-                {workspace.rootPassword && (
-                  <div className="pt-3" style={{ borderTop: '1px solid var(--color-border)' }}>
-                    <details className="group">
-                      <summary className="text-xs cursor-pointer font-medium select-none" style={{ color: 'var(--color-text-muted)' }}>
-                        Root access (fallback) ▸
-                      </summary>
-                      <div className="mt-3 space-y-2 text-sm">
-                        <div className="flex items-center justify-between p-2.5 rounded-xl" style={{ backgroundColor: 'rgba(217,119,6,0.08)' }}>
-                          <div className="flex items-center gap-2.5">
-                            <UserCircleIcon className="h-4 w-4 text-amber-500 dark:text-amber-400" />
-                            <span style={{ color: 'var(--color-text-secondary)' }}>Root user</span>
-                          </div>
-                          <code className="font-mono text-sm" style={{ color: 'var(--color-text)' }}>root</code>
-                        </div>
-                        <div className="flex items-center justify-between p-2.5 rounded-xl" style={{ backgroundColor: 'rgba(217,119,6,0.08)' }}>
-                          <div className="flex items-center gap-2.5">
-                            <KeyIcon className="h-4 w-4 text-amber-500 dark:text-amber-400" />
-                            <span style={{ color: 'var(--color-text-secondary)' }}>Root password</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <code className="font-mono text-sm" style={{ color: 'var(--color-text)' }}>
-                              {showPassword ? workspace.rootPassword : '••••••••'}
-                            </code>
-                            <button
-                              onClick={() => copyToClipboard(workspace.rootPassword, 'Root password copied!')}
-                              className="p-1" style={{ color: 'var(--color-text-muted)' }}
-                            >
-                              <DocumentDuplicateIcon className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <p className="text-xs text-amber-600 dark:text-amber-400">
-                          Use this to SSH as root if the sudo user login fails.
-                        </p>
-                      </div>
-                    </details>
-                  </div>
-                )}
               </div>
             ) : (
               <div className="text-center py-6">
@@ -465,6 +449,98 @@ const WorkspaceDetail = () => {
           </div>
         </div>
       </div>
+
+      {/* Resize Modal */}
+      {showResize && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => !resizing && setShowResize(false)}>
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-md rounded-2xl shadow-2xl p-6 space-y-5"
+            style={{ backgroundColor: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h3 className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>Scale Resources</h3>
+              <p className="text-sm mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                Adjust CPU, memory, or disk. The container will restart.
+              </p>
+            </div>
+
+            {/* CPU */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>CPU Cores</label>
+                <span className="text-sm font-mono font-bold" style={{ color: 'var(--color-text)' }}>{resizeForm.cpu}</span>
+              </div>
+              <input
+                type="range" min={1} max={8} step={1}
+                value={resizeForm.cpu}
+                onChange={(e) => setResizeForm({ ...resizeForm, cpu: parseInt(e.target.value) })}
+                className="w-full accent-primary-500"
+              />
+              <div className="flex justify-between text-[10px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                <span>1</span><span>8</span>
+              </div>
+            </div>
+
+            {/* Memory */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>Memory</label>
+                <span className="text-sm font-mono font-bold" style={{ color: 'var(--color-text)' }}>{resizeForm.memory} MB</span>
+              </div>
+              <input
+                type="range" min={256} max={16384} step={256}
+                value={resizeForm.memory}
+                onChange={(e) => setResizeForm({ ...resizeForm, memory: parseInt(e.target.value) })}
+                className="w-full accent-primary-500"
+              />
+              <div className="flex justify-between text-[10px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                <span>256 MB</span><span>16 GB</span>
+              </div>
+            </div>
+
+            {/* Disk */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>Disk</label>
+                <span className="text-sm font-mono font-bold" style={{ color: 'var(--color-text)' }}>{resizeForm.disk} GB</span>
+              </div>
+              <input
+                type="range" min={5} max={200} step={5}
+                value={resizeForm.disk}
+                onChange={(e) => setResizeForm({ ...resizeForm, disk: parseInt(e.target.value) })}
+                className="w-full accent-primary-500"
+              />
+              <div className="flex justify-between text-[10px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                <span>5 GB</span><span>200 GB</span>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setShowResize(false)}
+                disabled={resizing}
+                className="btn-secondary flex-1"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResize}
+                disabled={resizing}
+                className="btn-primary flex-1"
+              >
+                {resizing ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                    Resizing...
+                  </span>
+                ) : 'Apply'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

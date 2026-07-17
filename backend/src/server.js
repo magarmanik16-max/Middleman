@@ -9,6 +9,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 import authRoutes from './routes/auth.js';
 import workspaceRoutes from './routes/workspaces.js';
 import adminRoutes from './routes/admin.js';
+import { workspaceService } from './services/workspaceService.js';
 
 dotenv.config();
 
@@ -83,6 +84,9 @@ const startServer = async () => {
   app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
     logger.info(`Environment: ${process.env.NODE_ENV}`);
+
+    // Start container pool refill (background job)
+    workspaceService.startPoolRefill();
   });
 };
 

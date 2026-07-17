@@ -45,12 +45,11 @@ const Sidebar = ({ mobile, onClose }) => {
       }}>
         <Link to="/" className="flex items-center gap-3 group">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-500 via-primary-600 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-primary-500/30 group-hover:shadow-primary-500/50 group-hover:scale-105 transition-all duration-300">
-            <span className="text-white font-extrabold text-sm tracking-tight">TG</span>
+            <span className="text-white font-extrabold text-sm tracking-tight">MC</span>
           </div>
           <div>
             <div className="flex items-baseline gap-1">
-              <span className="text-base font-bold" style={{ color: 'var(--color-text)' }}>TimesGlobal</span>
-              <span className="text-base font-bold bg-gradient-to-r from-primary-500 to-fuchsia-500 bg-clip-text text-transparent">Cloud</span>
+              <span className="text-base font-bold" style={{ color: 'var(--color-text)' }}>ManikCloud</span>
             </div>
             <p className="text-[10px] font-medium tracking-wider uppercase" style={{ color: 'var(--color-text-muted)' }}>Dev Environments</p>
           </div>
@@ -236,7 +235,7 @@ const Layout = () => {
     if (location.pathname === '/') return 'Dashboard';
     if (location.pathname.startsWith('/workspace/')) return 'Workspace Details';
     if (location.pathname.startsWith('/admin')) return 'Admin';
-    return 'TimesGlobal Cloud';
+    return 'ManikCloud';
   };
 
   return (

@@ -1,4 +1,5 @@
 import { workspaceService } from '../services/workspaceService.js';
+import { proxmoxService } from '../services/proxmoxService.js';
 import { logger } from '../utils/logger.js';
 
 export const createWorkspace = async (req, res) => {
@@ -218,5 +219,70 @@ export const restartWorkspace = async (req, res) => {
     }
 
     res.status(500).json({ message: 'Failed to restart workspace' });
+  }
+};
+
+export const resizeWorkspace = async (req, res) => {
+  try {
+    const { cpu, memory, disk } = req.body;
+    const workspace = await workspaceService.resizeWorkspace(
+      req.params.id,
+      req.user._id,
+      { cpu, memory, disk }
+    );
+
+    res.json({
+      message: 'Workspace resized successfully',
+      workspace
+    });
+  } catch (error) {
+    logger.error('Resize workspace error:', error);
+
+    if (error.message === 'Workspace not found') {
+      return res.status(404).json({ message: error.message });
+    }
+
+    if (error.message === 'Not authorized to access this workspace') {
+      return res.status(403).json({ message: error.message });
+    }
+
+    if (error.message === 'Container not provisioned yet') {
+      return res.status(400).json({ message: error.message });
+    }
+
+    if (/must be between/.test(error.message)) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: 'Failed to resize workspace' });
+  }
+};
+
+export const getWorkspaceRRDData = async (req, res) => {
+  try {
+    const workspace = await workspaceService.getWorkspaceById(
+      req.params.id,
+      req.user._id
+    );
+
+    if (!workspace.proxmoxId) {
+      return res.status(400).json({ message: 'Container not provisioned yet' });
+    }
+
+    const timeframe = req.query.timeframe || 'hour';
+    const data = await proxmoxService.getContainerRRDData(workspace.proxmoxId, timeframe);
+    res.json({ data });
+  } catch (error) {
+    logger.error('Get RRD data error:', error);
+
+    if (error.message === 'Workspace not found') {
+      return res.status(404).json({ message: error.message });
+    }
+
+    if (error.message === 'Not authorized to access this workspace') {
+      return res.status(403).json({ message: error.message });
+    }
+
+    res.status(500).json({ message: 'Failed to get monitoring history' });
   }
 };

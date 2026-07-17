@@ -21,12 +21,12 @@ class EmailService {
       const mailOptions = {
         from: process.env.GMAIL_USER,
         to: email,
-        subject: 'TimesGlobal Cloud - Email Verification OTP',
+        subject: 'ManikCloud - Email Verification OTP',
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #333;">Email Verification</h2>
             <p>Hello,</p>
-            <p>Your One-Time Password (OTP) for TimesGlobal Cloud registration is:</p>
+            <p>Your One-Time Password (OTP) for ManikCloud registration is:</p>
             <div style="background-color: #f4f4f4; padding: 15px; text-align: center; margin: 20px 0;">
               <h1 style="color: #007bff; margin: 0; font-size: 32px;">${otp}</h1>
             </div>
@@ -34,7 +34,7 @@ class EmailService {
             <p>If you didn't request this verification, please ignore this email.</p>
             <br>
             <p>Best regards,</p>
-            <p>TimesGlobal Cloud Team</p>
+            <p>ManikCloud Team</p>
           </div>
         `
       };

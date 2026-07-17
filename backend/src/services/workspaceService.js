@@ -2,7 +2,16 @@ import crypto from 'crypto';
 import Workspace from '../models/Workspace.js';
 import ActivityLog from '../models/ActivityLog.js';
 import { proxmoxService } from './proxmoxService.js';
+import { sshService } from './sshService.js';
 import { logger } from '../utils/logger.js';
+
+// Simple mutex — only one container creation at a time to prevent
+// VMID / IP collisions under concurrent requests.
+let creationLock = Promise.resolve();
+
+// Pool refill mutex — prevent concurrent refill operations
+let refillLock = Promise.resolve();
+let poolRefillInterval = null;
 
 class WorkspaceService {
   /** Derive the SSH username from the user's email.
@@ -46,7 +55,7 @@ class WorkspaceService {
         resources: workspace.resources
       });
 
-      // Start Proxmox container creation in background
+      // Start Proxmox container creation in background (serialized via mutex)
       this.provisionContainer(workspace._id, workspace.resources).catch(error => {
         logger.error('Background container provisioning failed:', error);
       });
@@ -59,34 +68,231 @@ class WorkspaceService {
   }
 
   async provisionContainer(workspaceId, resources) {
+    // Serialize container creation to prevent VMID / IP collisions
+    const doProvision = async () => {
+      try {
+        const workspace = await Workspace.findById(workspaceId);
+        if (!workspace) throw new Error('Workspace not found');
+
+        // Try to grab from pool first
+        const poolContainer = await this.claimFromPool(workspace, resources);
+        if (poolContainer) {
+          return poolContainer;
+        }
+
+        // Fallback: clone directly if pool is empty
+        logger.info(`Pool empty, falling back to direct clone for workspace ${workspaceId}`);
+        return await this.provisionDirect(workspace, resources);
+      } catch (error) {
+        logger.error('Error provisioning container:', error);
+
+        // Record the failure on the workspace so the UI can surface it
+        await Workspace.findByIdAndUpdate(workspaceId, {
+          status: 'error',
+          lastError: error.message
+        });
+        throw error;
+      }
+    };
+
+    // Chain onto the creation lock so only one runs at a time
+    const prev = creationLock;
+    let release;
+    creationLock = new Promise((r) => { release = r; });
     try {
-      const workspace = await Workspace.findById(workspaceId);
-      if (!workspace) throw new Error('Workspace not found');
+      await prev;
+      return await doProvision();
+    } finally {
+      release();
+    }
+  }
 
-      // Create container in Proxmox (createContainer assigns a static IP,
-      // uploads a hook script + creds file to create the sudo user on start)
-      const container = await proxmoxService.createContainer(
-        workspace.userId, resources, workspace.sshUsername, workspace.sshPassword
-      );
+  /** Claim a pre-provisioned container from the pool. */
+  async claimFromPool(workspace, resources) {
+    try {
+      const poolContainers = await proxmoxService.getPoolContainers();
+      if (!poolContainers.length) {
+        logger.info('No pool containers available');
+        return null;
+      }
 
-      // Update workspace with Proxmox details, static IP, and root password
-      workspace.proxmoxId = container.vmid;
+      // Grab the oldest pool container
+      const poolCt = poolContainers[0];
+      const vmid = poolCt.vmid;
+
+      logger.info(`Claiming pool container ${vmid} for workspace ${workspace._id}`);
+
+      // Allocate IP
+      const allocated = await proxmoxService.findAvailableIP();
+      const hostname = `ws-${workspace.userId}-${Date.now()}`.slice(0, 64);
+
+      // Configure for this workspace
+      await proxmoxService.configurePoolContainer(vmid, {
+        ip: allocated.ip,
+        gateway: allocated.gateway,
+        cidr: allocated.cidr,
+        cpu: resources.cpu,
+        memory: resources.memory,
+        disk: resources.disk,
+        hostname,
+      });
+
+      // Start the container
+      await proxmoxService.startContainer(vmid);
+
+      // Wait for it to be running
+      const ready = await proxmoxService.waitForContainerRunning(vmid, 60000);
+      if (!ready) {
+        throw new Error('Container did not start in time');
+      }
+
+      // Give SSH daemon a moment
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Provision user
+      if (sshService.isConfigured) {
+        await sshService.provisionClonedContainerUser(
+          vmid, workspace.sshUsername, workspace.sshPassword, hostname, allocated.ip
+        );
+        logger.info(`Pool container ${vmid} provisioned with user ${workspace.sshUsername}`);
+      } else {
+        logger.warn('SSH not configured — container will only have root access');
+      }
+
+      // Update workspace record
+      workspace.proxmoxId = vmid;
       workspace.status = 'running';
-      workspace.ip = container.ip;
-      workspace.rootPassword = container.rootPassword;
+      workspace.ip = allocated.ip;
       workspace.lastError = undefined;
       await workspace.save();
 
-      logger.info(`Container ${container.vmid} provisioned for workspace ${workspaceId}, IP=${container.ip}`);
+      logger.info(`Pool container ${vmid} assigned to workspace ${workspace._id}, IP=${allocated.ip}`);
+      return workspace;
     } catch (error) {
-      logger.error('Error provisioning container:', error);
+      logger.warn(`Pool claim failed: ${error.message}`);
+      return null;
+    }
+  }
 
-      // Record the failure on the workspace so the UI can surface it
-      await Workspace.findByIdAndUpdate(workspaceId, {
-        status: 'error',
-        lastError: error.message
-      });
-      throw error;
+  /** Provision a container directly via clone (fallback when pool empty). */
+  async provisionDirect(workspace, resources) {
+    // Allocate a static IP before cloning
+    const allocated = await proxmoxService.findAvailableIP();
+    const hostname = `ws-${workspace.userId}-${Date.now()}`.slice(0, 64);
+
+    // Clone the template container
+    const vmid = await proxmoxService.cloneContainer(
+      proxmoxService.templateVmid, hostname
+    );
+
+    // Configure hostname, IP, resources
+    await proxmoxService.configureContainer(vmid, {
+      ip: allocated.ip,
+      gateway: allocated.gateway,
+      cidr: allocated.cidr,
+      cpu: resources.cpu,
+      memory: resources.memory,
+      disk: resources.disk,
+    });
+
+    // Start the container
+    await proxmoxService.startContainer(vmid);
+
+    // Wait for it to be running (up to 60s)
+    const ready = await proxmoxService.waitForContainerRunning(vmid, 60000);
+    if (!ready) {
+      throw new Error('Container did not start in time');
+    }
+
+    // Give the container a moment for SSH daemon to come up
+    await new Promise(r => setTimeout(r, 5000));
+
+    // Provision user inside the cloned container
+    if (sshService.isConfigured) {
+      await sshService.provisionClonedContainerUser(
+        vmid, workspace.sshUsername, workspace.sshPassword, hostname, allocated.ip
+      );
+      logger.info(`Cloned container ${vmid} provisioned with user ${workspace.sshUsername}`);
+    } else {
+      logger.warn('SSH not configured — container will only have root access');
+    }
+
+    // Update workspace record
+    workspace.proxmoxId = vmid;
+    workspace.status = 'running';
+    workspace.ip = allocated.ip;
+    workspace.lastError = undefined;
+    await workspace.save();
+
+    logger.info(`Container ${vmid} provisioned for workspace ${workspace._id}, IP=${allocated.ip}`);
+    return workspace;
+  }
+
+  // ── Container Pool Refill ──────────────────────────────────────────────────
+
+  /** Refill pool to target size. Runs in background, non-blocking. */
+  async refillPool() {
+    const doRefill = async () => {
+      try {
+        const poolContainers = await proxmoxService.getPoolContainers();
+        const currentSize = poolContainers.length;
+        const targetSize = proxmoxService.poolSize;
+
+        if (currentSize >= targetSize) {
+          return; // Pool is full
+        }
+
+        const toCreate = targetSize - currentSize;
+        logger.info(`Pool refill: ${currentSize}/${targetSize} containers, creating ${toCreate}`);
+
+        for (let i = 0; i < toCreate; i++) {
+          try {
+            await proxmoxService.cloneToPool(proxmoxService.templateVmid);
+            logger.info(`Pool container created (${currentSize + i + 1}/${targetSize})`);
+          } catch (e) {
+            logger.error(`Pool clone failed: ${e.message}`);
+            // Continue with next container
+          }
+        }
+      } catch (e) {
+        logger.error(`Pool refill error: ${e.message}`);
+      }
+    };
+
+    // Serialize refill operations
+    const prev = refillLock;
+    let release;
+    refillLock = new Promise((r) => { release = r; });
+    try {
+      await prev;
+      return await doRefill();
+    } finally {
+      release();
+    }
+  }
+
+  /** Start the background pool refill interval. */
+  startPoolRefill() {
+    if (poolRefillInterval) return; // Already running
+
+    const intervalMs = 60000; // Check every 60 seconds
+    logger.info(`Starting pool refill (every ${intervalMs / 1000}s, target: ${proxmoxService.poolSize})`);
+
+    // Initial refill
+    this.refillPool().catch(e => logger.error('Initial pool refill failed:', e));
+
+    // Recurring refill
+    poolRefillInterval = setInterval(() => {
+      this.refillPool().catch(e => logger.error('Pool refill failed:', e));
+    }, intervalMs);
+  }
+
+  /** Stop the background pool refill interval. */
+  stopPoolRefill() {
+    if (poolRefillInterval) {
+      clearInterval(poolRefillInterval);
+      poolRefillInterval = null;
+      logger.info('Pool refill stopped');
     }
   }
 
@@ -94,9 +300,9 @@ class WorkspaceService {
     const workspace = await this.getWorkspaceById(workspaceId, userId);
     if (workspace.proxmoxId) {
       // A container already exists; just sync status/IP
-      const status = await proxmoxService.getContainerStatus(workspace.proxmoxId);
+      const stats = await proxmoxService.getContainerStatus(workspace.proxmoxId);
       const ip = await proxmoxService.getContainerIP(workspace.proxmoxId);
-      workspace.status = status === 'running' ? 'running' : (status || 'stopped');
+      workspace.status = stats.status === 'running' ? 'running' : (stats.status || 'stopped');
       if (ip) workspace.ip = ip;
       workspace.lastError = undefined;
       await workspace.save();
@@ -113,25 +319,27 @@ class WorkspaceService {
     try {
       const workspaces = await Workspace.find({ userId }).sort({ createdAt: -1 });
 
-      // Fire-and-forget status sync: check actual container status from Proxmox
-      // for each workspace that has a container. The list returns immediately;
-      // updates happen asynchronously so the next poll picks them up.
-      for (const ws of workspaces) {
+      // Fetch real-time monitoring stats from Proxmox for each running workspace.
+      // This is done in parallel and the results are attached directly to the response.
+      const statsPromises = workspaces.map(async (ws) => {
         if (ws.proxmoxId && !['creating', 'deleting'].includes(ws.status)) {
-          proxmoxService.getContainerStatus(ws.proxmoxId)
-            .then(realStatus => {
-              const normalized = realStatus === 'running' ? 'running' : 'stopped';
-              if (normalized !== ws.status) {
-                ws.status = normalized;
-                ws.save().catch(() => {});
-                logger.info(`Workspace ${ws._id}: list sync changed status to ${normalized}`);
-              }
-            })
-            .catch(() => {
-              // Proxmox unreachable — skip silently
-            });
+          try {
+            const stats = await proxmoxService.getContainerStatus(ws.proxmoxId);
+            const normalized = stats.status === 'running' ? 'running' : 'stopped';
+            if (normalized !== ws.status) {
+              ws.status = normalized;
+              ws.save().catch(() => {});
+            }
+            ws._doc.stats = stats;
+          } catch {
+            ws._doc.stats = null;
+          }
+        } else {
+          ws._doc.stats = null;
         }
-      }
+      });
+
+      await Promise.allSettled(statsPromises);
 
       return workspaces;
     } catch (error) {
@@ -153,21 +361,23 @@ class WorkspaceService {
         throw new Error('Not authorized to access this workspace');
       }
 
-      // Real-time status sync: check the actual container status from Proxmox
-      // and update the DB if it changed externally (e.g. shutdown now from inside).
+      // Real-time status sync + monitoring stats from Proxmox
       if (workspace.proxmoxId && !['creating', 'deleting'].includes(workspace.status)) {
         try {
-          const realStatus = await proxmoxService.getContainerStatus(workspace.proxmoxId);
-          const normalizedStatus = realStatus === 'running' ? 'running' : 'stopped';
+          const stats = await proxmoxService.getContainerStatus(workspace.proxmoxId);
+          const normalizedStatus = stats.status === 'running' ? 'running' : 'stopped';
           if (normalizedStatus !== workspace.status) {
             workspace.status = normalizedStatus;
             await workspace.save();
-            logger.info(`Workspace ${workspaceId}: synced status to ${normalizedStatus} (was ${workspace.status})`);
+            logger.info(`Workspace ${workspaceId}: synced status to ${normalizedStatus}`);
           }
+          workspace._doc.stats = stats;
         } catch (e) {
-          // Proxmox might be unreachable — just log and return DB state
+          workspace._doc.stats = null;
           logger.warn(`Status sync failed for workspace ${workspaceId}: ${e.message.slice(0, 100)}`);
         }
+      } else {
+        workspace._doc.stats = null;
       }
 
       return workspace;
@@ -308,6 +518,42 @@ class WorkspaceService {
       return workspace;
     } catch (error) {
       logger.error('Error restarting workspace:', error);
+      throw error;
+    }
+  }
+
+  async resizeWorkspace(workspaceId, userId, resources) {
+    try {
+      const workspace = await this.getWorkspaceById(workspaceId, userId);
+
+      if (!workspace.proxmoxId) {
+        throw new Error('Container not provisioned yet');
+      }
+
+      const allowed = { cpu: [1, 8], memory: [256, 16384], disk: [5, 200] };
+      for (const [key, [min, max]] of Object.entries(allowed)) {
+        if (resources[key] != null && (resources[key] < min || resources[key] > max)) {
+          throw new Error(`${key} must be between ${min} and ${max}`);
+        }
+      }
+
+      await proxmoxService.resizeContainer(workspace.proxmoxId, {
+        cpu: resources.cpu ?? workspace.resources.cpu,
+        memory: resources.memory ?? workspace.resources.memory,
+        disk: resources.disk ?? workspace.resources.disk,
+      });
+
+      // Update stored resource values
+      if (resources.cpu != null) workspace.resources.cpu = resources.cpu;
+      if (resources.memory != null) workspace.resources.memory = resources.memory;
+      if (resources.disk != null) workspace.resources.disk = resources.disk;
+      await workspace.save();
+
+      await this.logActivity(userId, 'WORKSPACE_RESIZE', 'workspace', workspaceId, { resources });
+
+      return workspace;
+    } catch (error) {
+      logger.error('Error resizing workspace:', error);
       throw error;
     }
   }

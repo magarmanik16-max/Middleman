@@ -1,7 +1,7 @@
 {
-  "name": "timesglobal-cloud-backend",
+  "name": "manikcloud-backend",
   "version": "1.0.0",
-  "description": "Backend API for TimesGlobal Cloud internal developer platform",
+  "description": "Backend API for ManikCloud internal developer platform",
   "main": "src/server.js",
   "type": "module",
   "scripts": {

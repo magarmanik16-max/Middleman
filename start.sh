@@ -65,7 +65,7 @@ start_mongo() {
   echo -e "${YELLOW}⚠ MongoDB did not start in time.${NC}"
 }
 
-echo -e "${GREEN}Starting TimesGlobal Cloud...${NC}"
+echo -e "${GREEN}Starting ManikCloud...${NC}"
 
 start_mongo
 

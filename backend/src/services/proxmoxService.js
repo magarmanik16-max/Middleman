@@ -246,6 +246,105 @@ class ProxmoxService {
     return { vmid, ip: allocated.ip, rootPassword, status: 'created', config };
   }
 
+  get templateVmid() {
+    return parseInt(process.env.PROXMOX_TEMPLATE_VMID, 10) || 105;
+  }
+
+  async cloneContainer(sourceVmid, hostname) {
+    const vmid = await this.getNextVMID();
+
+    // Clone the template (full clone, not linked)
+    const upid = await this.request('POST', `/nodes/${this.node}/lxc`, {
+      clone: sourceVmid,
+      vmid,
+      hostname,
+      full: 1,
+    });
+    const exitstatus = await this.waitForTask(upid);
+    const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
+    if (!ok) {
+      throw new Error(`Container clone task failed: ${exitstatus}`);
+    }
+
+    logger.info(`Cloned container ${sourceVmid} → ${vmid} (${hostname})`);
+    return vmid;
+  }
+
+  // ── Container Pool Management ──────────────────────────────────────────────
+  // Pre-provisioned pool of stopped containers for instant workspace creation.
+  // Pool containers are identified by label "pool=manikcloud-blank".
+
+  get poolSize() {
+    return parseInt(process.env.POOL_SIZE, 10) || 3;
+  }
+
+  /** List all containers with label pool=manikcloud-blank (stopped, ready to use). */
+  async getPoolContainers() {
+    try {
+      const data = await this.request('GET', `/nodes/${this.node}/lxc`);
+      return (data || []).filter(ct => {
+        const labels = ct.labels || {};
+        return labels.pool === 'manikcloud-blank' && ct.status === 'stopped';
+      });
+    } catch (e) {
+      logger.warn(`Failed to list pool containers: ${e.message}`);
+      return [];
+    }
+  }
+
+  /** Clone a template and mark it as a pool container (stopped). */
+  async cloneToPool(sourceVmid) {
+    const vmid = await this.getNextVMID();
+    const hostname = `pool-${vmid}`.slice(0, 64);
+
+    const upid = await this.request('POST', `/nodes/${this.node}/lxc`, {
+      clone: sourceVmid,
+      vmid,
+      hostname,
+      full: 1,
+    });
+    const exitstatus = await this.waitForTask(upid);
+    const ok = exitstatus === 'OK' || String(exitstatus).startsWith('WARNINGS:');
+    if (!ok) {
+      throw new Error(`Pool container clone failed: ${exitstatus}`);
+    }
+
+    // Tag as pool container via label
+    await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
+      tags: 'manikcloud-pool',
+    });
+
+    logger.info(`Pool container ${vmid} created from template ${sourceVmid}`);
+    return vmid;
+  }
+
+  /** Configure a pool container for a workspace (set hostname, IP, resources). */
+  async configurePoolContainer(vmid, { ip, gateway, cidr, cpu, memory, disk, hostname }) {
+    const configBody = {
+      hostname,
+      cores: cpu,
+      memory,
+      rootfs: `local-lvm:${disk}`,
+      net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
+      features: 'nesting=1',
+      unprivileged: 1,
+      tags: '', // Clear pool tag
+    };
+    await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
+  }
+
+  async configureContainer(vmid, { ip, gateway, cidr, cpu, memory, disk }) {
+    const configBody = {
+      cores: cpu,
+      memory,
+      rootfs: `local-lvm:${disk}`,
+      net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
+      features: 'nesting=1',
+      unprivileged: 1,
+    };
+    await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
+  }
+
   async startContainer(vmid) {
     await this.request('POST', `/nodes/${this.node}/lxc/${vmid}/status/start`);
   }
@@ -280,9 +379,92 @@ class ProxmoxService {
     return true;
   }
 
+  async resizeContainer(vmid, { cpu, memory, disk }) {
+    // Update CPU and memory via config — Proxmox supports hot-plug for LXC
+    const configBody = {};
+    if (cpu != null) configBody.cores = String(cpu);
+    if (memory != null) configBody.memory = String(memory);
+    if (Object.keys(configBody).length > 0) {
+      await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
+    }
+
+    // Resize disk online — Proxmox supports live rootfs grow
+    if (disk != null) {
+      try {
+        const current = await this.getContainerStatus(vmid);
+        const currentDiskGB = Math.round((current.maxdisk || 0) / (1024 * 1024 * 1024));
+        const deltaGB = disk - currentDiskGB;
+        if (deltaGB > 0) {
+          await this.request('POST', `/nodes/${this.node}/lxc/${vmid}/resize`, {
+            disk: 'rootfs',
+            size: `+${deltaGB}G`,
+          });
+        }
+      } catch (e) {
+        logger.warn(`Disk resize failed for container ${vmid}: ${e.message}`);
+      }
+    }
+
+    return true;
+  }
+
   async getContainerStatus(vmid) {
     const data = await this.request('GET', `/nodes/${this.node}/lxc/${vmid}/status/current`);
-    return data.status;
+    return {
+      status: data.status,
+      cpu: data.cpu ?? 0,
+      cpus: data.cpus ?? 0,
+      mem: data.mem ?? 0,
+      maxmem: data.maxmem ?? 0,
+      disk: data.disk ?? 0,
+      maxdisk: data.maxdisk ?? 0,
+      diskread: data.diskread ?? 0,
+      diskwrite: data.diskwrite ?? 0,
+      netin: data.netin ?? 0,
+      netout: data.netout ?? 0,
+      uptime: data.uptime ?? 0,
+      swap: data.swap ?? 0,
+      maxswap: data.maxswap ?? 0,
+    };
+  }
+
+  async getContainerRRDData(vmid, timeframe = 'hour') {
+    const allowed = ['hour', 'day', 'week', 'month'];
+    if (!allowed.includes(timeframe)) timeframe = 'hour';
+    const data = await this.request('GET', `/nodes/${this.node}/lxc/${vmid}/rrddata?timeframe=${timeframe}`);
+    const raw = (data || []).map((point) => ({
+      time: point.time,
+      cpu: point.cpu ?? 0,
+      maxcpu: point.maxcpu ?? 0,
+      mem: point.mem ?? 0,
+      maxmem: point.maxmem ?? 0,
+      disk: point.disk ?? 0,
+      maxdisk: point.maxdisk ?? 0,
+      netin: point.netin ?? 0,
+      netout: point.netout ?? 0,
+      diskread: point.diskread ?? 0,
+      diskwrite: point.diskwrite ?? 0,
+    }));
+
+    // Proxmox RRD returns cumulative counters; convert to rates (bytes/sec)
+    for (let i = 1; i < raw.length; i++) {
+      const dt = raw[i].time - raw[i - 1].time;
+      if (dt > 0) {
+        raw[i].netin = Math.max(0, (raw[i].netin - raw[i - 1].netin) / dt);
+        raw[i].netout = Math.max(0, (raw[i].netout - raw[i - 1].netout) / dt);
+        raw[i].diskread = Math.max(0, (raw[i].diskread - raw[i - 1].diskread) / dt);
+        raw[i].diskwrite = Math.max(0, (raw[i].diskwrite - raw[i - 1].diskwrite) / dt);
+      }
+    }
+    // First point has no prior reference, zero it out
+    if (raw.length > 0) {
+      raw[0].netin = 0;
+      raw[0].netout = 0;
+      raw[0].diskread = 0;
+      raw[0].diskwrite = 0;
+    }
+
+    return raw;
   }
 
   /** Poll container status until it reaches 'running' or timeout expires. */
@@ -291,10 +473,10 @@ class ProxmoxService {
     while (Date.now() - start < timeoutMs) {
       try {
         const status = await this.getContainerStatus(vmid);
-        if (status === 'running') {
+        if (status.status === 'running') {
           return true;
         }
-        logger.info(`Container ${vmid} status: ${status}, waiting...`);
+        logger.info(`Container ${vmid} status: ${status.status}, waiting...`);
       } catch (e) {
         logger.warn(`Could not check status for ${vmid}: ${e.message}`);
       }
@@ -341,7 +523,7 @@ class ProxmoxService {
   }
 
   get HOOK_SCRIPT_FILENAME() {
-    return 'timesglobal-hook.sh';
+    return 'manikcloud-hook.sh';
   }
 
   get HOOK_SCRIPT_PATH() {
@@ -353,8 +535,8 @@ class ProxmoxService {
   get HOOK_SCRIPT() {
     return [
       '#!/bin/bash',
-      '# TimesGlobal Cloud container hook script',
-      '# Uploaded via Proxmox API by TimesGlobal Cloud backend',
+      '# ManikCloud container hook script',
+      '# Uploaded via Proxmox API by ManikCloud backend',
       '# Creates a sudo user inside the container on post-start',
       '',
       'VMID="${1}"',

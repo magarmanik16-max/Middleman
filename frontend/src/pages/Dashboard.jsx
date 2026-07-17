@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { MonitoringStats } from '../components/MonitoringStats';
 import {
   PlusIcon,
   PlayIcon,
@@ -322,6 +323,13 @@ const WorkspaceCard = ({ ws, onAction, index }) => (
               </span>
             ))}
           </div>
+
+          {/* Live monitoring for running workspaces */}
+          {ws.status === 'running' && ws.stats && (
+            <div className="pt-2">
+              <MonitoringStats stats={ws.stats} compact />
+            </div>
+          )}
         </div>
 
         {/* Actions */}

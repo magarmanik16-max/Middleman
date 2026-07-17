@@ -157,11 +157,11 @@ const VerifyOTP = () => {
           <div className="mb-12">
             <div className="inline-flex items-center gap-3">
               <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-primary-500 via-primary-600 to-fuchsia-600 flex items-center justify-center shadow-xl shadow-primary-500/30">
-                <span className="text-white font-extrabold text-lg tracking-tight">TG</span>
+                <span className="text-white font-extrabold text-lg tracking-tight">MC</span>
               </div>
               <div>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-lg font-bold text-white">TimesGlobal</span>
+                  <span className="text-lg font-bold text-white">ManikCloud</span>
                   <span className="text-lg font-bold bg-gradient-to-r from-primary-400 to-fuchsia-400 bg-clip-text text-transparent">Cloud</span>
                 </div>
                 <p className="text-[11px] font-medium tracking-wider uppercase text-white/30">Dev Environments</p>
@@ -219,11 +219,11 @@ const VerifyOTP = () => {
           <div className="lg:hidden text-center mb-10">
             <div className="inline-flex items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 via-primary-600 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-primary-500/30">
-                <span className="text-white font-extrabold text-base">TG</span>
+                <span className="text-white font-extrabold text-base">MC</span>
               </div>
-              <div className="text-left">
+              <div>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-base font-bold" style={{ color: 'var(--color-text)' }}>TimesGlobal</span>
+                  <span className="text-base font-bold" style={{ color: 'var(--color-text)' }}>ManikCloud</span>
                   <span className="text-base font-bold bg-gradient-to-r from-primary-500 to-fuchsia-500 bg-clip-text text-transparent">Cloud</span>
                 </div>
                 <p className="text-[10px] font-medium tracking-wider uppercase" style={{ color: 'var(--color-text-muted)' }}>Dev Environments</p>

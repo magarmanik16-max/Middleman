@@ -3,7 +3,7 @@ version: '3.8'
 services:
   mongodb:
     image: mongo:6
-    container_name: timesglobal-cloud-mongodb
+    container_name: manikcloud-mongodb
     restart: unless-stopped
     ports:
       - "27017:27017"
@@ -12,19 +12,19 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: password123
-      MONGO_INITDB_DATABASE: timesglobal_cloud
+      MONGO_INITDB_DATABASE: manikcloud
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: timesglobal-cloud-backend
+    container_name: manikcloud-backend
     restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/timesglobal_cloud?authSource=admin
+      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/manikcloud?authSource=admin
       - JWT_SECRET=${JWT_SECRET:-your-production-jwt-secret}
       - JWT_EXPIRES_IN=15m
       - JWT_REFRESH_EXPIRES_IN=7d
@@ -41,6 +41,7 @@ services:
       - PROXMOX_SSH_KEY=${PROXMOX_SSH_KEY}
       - CORS_ORIGIN=${CORS_ORIGIN:-https://localhost,https://192.168.55.155}
       - ALLOWED_EMAIL_DOMAIN=@timesglobal.com.np
+      - MAX_WORKSPACES_PER_USER=${MAX_WORKSPACES_PER_USER:-0}
     depends_on:
       - mongodb
     volumes:
@@ -50,7 +51,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: timesglobal-cloud-frontend
+    container_name: manikcloud-frontend
     restart: unless-stopped
     ports:
       - "80:80"

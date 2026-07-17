@@ -9,7 +9,9 @@ import {
   startWorkspace,
   stopWorkspace,
   restartWorkspace,
-  retryProvisioning
+  retryProvisioning,
+  getWorkspaceRRDData,
+  resizeWorkspace
 } from '../controllers/workspaceController.js';
 import { authenticate } from '../middleware/auth.js';
 
@@ -54,5 +56,7 @@ router.post('/:id/start', startWorkspace);
 router.post('/:id/stop', stopWorkspace);
 router.post('/:id/restart', restartWorkspace);
 router.post('/:id/retry', retryProvisioning);
+router.post('/:id/resize', resizeWorkspace);
+router.get('/:id/rrddata', getWorkspaceRRDData);
 
 export default router;

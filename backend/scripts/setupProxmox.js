@@ -6,9 +6,9 @@ dotenv.config();
 const BASE = process.env.PROXMOX_API_URL || 'https://localhost:8006';
 const ADMIN_TOKEN = process.env.PROXMOX_ADMIN_TOKEN; // e.g. root@pam!setup
 const TARGET_USER = process.env.PROXMOX_TARGET_USER || 'devcloud@pve';
-const ROLE = process.env.PROXMOX_ROLE || 'TimesGlobalCloud';
+const ROLE = process.env.PROXMOX_ROLE || 'ManikCloud';
 
-// Least-privilege set needed by TimesGlobal Cloud: full VM lifecycle + storage allocation
+// Least-privilege set needed by ManikCloud: full VM lifecycle + storage allocation
 const PRIVS = [
   'VM.Allocate',
   'VM.Config.CPU',
