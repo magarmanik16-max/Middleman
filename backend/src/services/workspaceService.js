@@ -122,6 +122,9 @@ class WorkspaceService {
 
       logger.info(`Claiming pool container ${vmid} for workspace ${workspace._id}`);
 
+      // Clear any stale proxmoxId from previous failed attempts
+      workspace.proxmoxId = undefined;
+
       // Allocate IP
       const allocated = await proxmoxService.findAvailableIP();
       const hostname = `ws-${workspace.userId}-${Date.now()}`.slice(0, 64);
@@ -147,7 +150,7 @@ class WorkspaceService {
       }
 
       // Give SSH daemon a moment
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 3000));
 
       // Provision user
       if (sshService.isConfigured) {
@@ -259,10 +262,10 @@ class WorkspaceService {
       }
     };
 
-    // Serialize refill operations
-    const prev = refillLock;
+    // Serialize with creation lock so refill and creation don't fight for template
+    const prev = creationLock;
     let release;
-    refillLock = new Promise((r) => { release = r; });
+    creationLock = new Promise((r) => { release = r; });
     try {
       await prev;
       return await doRefill();

@@ -282,7 +282,10 @@ class ProxmoxService {
     }
     if (lastError) throw lastError;
 
-    // Step 2: Set hostname on the cloned container
+    // Step 2: Wait for container lock to release after clone
+    await new Promise(r => setTimeout(r, 5000));
+
+    // Step 3: Set hostname on the cloned container
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
       hostname: hostname,
     });
@@ -346,7 +349,10 @@ class ProxmoxService {
     }
     if (lastError) throw lastError;
 
-    // Step 2: Set hostname and tag as pool container
+    // Step 2: Wait for container lock to release after clone
+    await new Promise(r => setTimeout(r, 5000));
+
+    // Step 3: Set hostname and tag as pool container
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, {
       hostname: hostname,
       tags: 'manikcloud-pool',
@@ -358,29 +364,59 @@ class ProxmoxService {
 
   /** Configure a pool container for a workspace (set hostname, IP, resources). */
   async configurePoolContainer(vmid, { ip, gateway, cidr, cpu, memory, disk, hostname }) {
-    // Note: unprivileged is inherited from template — read-only after clone
+    // Note: unprivileged and rootfs are inherited from template — read-only after clone
     const configBody = {
       hostname,
       cores: cpu,
       memory,
-      rootfs: `local-lvm:${disk}`,
       net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
       features: 'nesting=1',
       tags: '', // Clear pool tag
     };
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
+
+    // Resize disk separately if needed (clone inherits template's disk size)
+    if (disk) {
+      try {
+        const status = await this.getContainerStatus(vmid);
+        const currentDiskGB = Math.round((status.maxdisk || 0) / (1024 * 1024 * 1024));
+        if (disk > currentDiskGB) {
+          await this.request('POST', `/nodes/${this.node}/lxc/${vmid}/resize`, {
+            disk: 'rootfs',
+            size: `+${disk - currentDiskGB}G`,
+          });
+        }
+      } catch (e) {
+        logger.warn(`Disk resize failed for pool container ${vmid}: ${e.message}`);
+      }
+    }
   }
 
   async configureContainer(vmid, { ip, gateway, cidr, cpu, memory, disk }) {
-    // Note: unprivileged is inherited from template — read-only after clone
+    // Note: unprivileged and rootfs are inherited from template — read-only after clone
     const configBody = {
       cores: cpu,
       memory,
-      rootfs: `local-lvm:${disk}`,
       net0: `name=eth0,bridge=vmbr0,ip=${ip}/${cidr},gw=${gateway},type=veth`,
       features: 'nesting=1',
     };
     await this.request('PUT', `/nodes/${this.node}/lxc/${vmid}/config`, configBody);
+
+    // Resize disk separately if needed (clone inherits template's disk size)
+    if (disk) {
+      try {
+        const status = await this.getContainerStatus(vmid);
+        const currentDiskGB = Math.round((status.maxdisk || 0) / (1024 * 1024 * 1024));
+        if (disk > currentDiskGB) {
+          await this.request('POST', `/nodes/${this.node}/lxc/${vmid}/resize`, {
+            disk: 'rootfs',
+            size: `+${disk - currentDiskGB}G`,
+          });
+        }
+      } catch (e) {
+        logger.warn(`Disk resize failed for container ${vmid}: ${e.message}`);
+      }
+    }
   }
 
   async startContainer(vmid) {
