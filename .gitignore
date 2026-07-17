@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Build directory
+dist/
+build/
+
+# Coverage & generated reports
+backend/coverage/
+lcov-report/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+
+# MongoDB data
+data/db/
+.mongo-data/
+
+# Bundled local MongoDB binary (downloaded, not committed)
+.local/
+
+# Proxmox certificates
+*.pem
+*.key
+*.crt
